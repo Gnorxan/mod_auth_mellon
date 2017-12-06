@@ -1,7 +1,7 @@
 /*
  *
  *   auth_mellon_cache.c: an authentication apache module
- *   Copyright © 2003-2007 UNINETT (http://www.uninett.no/)
+ *   Copyright ï¿½ 2003-2007 UNINETT (http://www.uninett.no/)
  *
  *   This program is free software; you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -70,14 +70,14 @@ void am_cache_init(am_mod_cfg_rec *mod_cfg)
  * after you are done with it.
  *
  * Parameters:
- *  request_rec *r       The request we are processing.
+ *  server_rec *s        The current server.
  *  am_cache_key_t type  AM_CACHE_SESSION or AM_CACHE_NAMEID
  *  const char *key      The session key or user
  *
  * Returns:
  *  The session entry on success or NULL on failure.
  */
-am_cache_entry_t *am_cache_lock(request_rec *r, 
+am_cache_entry_t *am_cache_lock(server_rec *s, 
                                 am_cache_key_t type,
                                 const char *key)
 {
@@ -104,14 +104,14 @@ am_cache_entry_t *am_cache_lock(request_rec *r,
         break;
     }
 
-    mod_cfg = am_get_mod_cfg(r->server);
+    mod_cfg = am_get_mod_cfg(s);
 
 
     /* Lock the table. */
     if((rv = apr_global_mutex_lock(mod_cfg->lock)) != APR_SUCCESS) {
-        AM_LOG_RERROR(APLOG_MARK, APLOG_ERR, 0, r,
-                      "apr_global_mutex_lock() failed [%d]: %s",
-                      rv, apr_strerror(rv, buffer, sizeof(buffer)));
+        ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
+                     "apr_global_mutex_lock() failed [%d]: %s",
+                     rv, apr_strerror(rv, buffer, sizeof(buffer)));
         return NULL;
     }
 
@@ -144,16 +144,10 @@ am_cache_entry_t *am_cache_lock(request_rec *r,
             continue;
 
         if(strcmp(tablekey, key) == 0) {
-            apr_time_t now = apr_time_now();
             /* We found the entry. */
-            if(e->expires > now) {
+            if(e->expires > apr_time_now()) {
                 /* And it hasn't expired. */
                 return e;
-            }
-            else {
-                am_diag_log_cache_entry(r, 0, e,
-                                        "found expired session, now %s\n",
-                                        am_diag_time_t_to_8601(r, now));
             }
         }
     }
@@ -277,7 +271,7 @@ const char *am_cache_entry_get_string(am_cache_entry_t *e,
  * Remember to unlock the table with am_cache_unlock(...) afterwards.
  *
  * Parameters:
- *  request_rec *r       The request we are processing.
+ *  server_rec *s        The current server.
  *  const char *key      The key of the session to allocate.
  *  const char *cookie_token  The cookie token to tie the session to.
  *
@@ -285,7 +279,7 @@ const char *am_cache_entry_get_string(am_cache_entry_t *e,
  *  The new session entry on success. NULL if key is a invalid session
  *  key.
  */
-am_cache_entry_t *am_cache_new(request_rec *r,
+am_cache_entry_t *am_cache_new(server_rec *s,
                                const char *key,
                                const char *cookie_token)
 {
@@ -304,14 +298,14 @@ am_cache_entry_t *am_cache_new(request_rec *r,
     }
 
 
-    mod_cfg = am_get_mod_cfg(r->server);
+    mod_cfg = am_get_mod_cfg(s);
 
 
     /* Lock the table. */
     if((rv = apr_global_mutex_lock(mod_cfg->lock)) != APR_SUCCESS) {
-        AM_LOG_RERROR(APLOG_MARK, APLOG_ERR, 0, r,
-                      "apr_global_mutex_lock() failed [%d]: %s",
-                      rv, apr_strerror(rv, buffer, sizeof(buffer)));
+        ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
+                     "apr_global_mutex_lock() failed [%d]: %s",
+                     rv, apr_strerror(rv, buffer, sizeof(buffer)));
         return NULL;
     }
 
@@ -348,10 +342,6 @@ am_cache_entry_t *am_cache_new(request_rec *r,
              * Update 't' and exit loop.
              */
             t = e;
-            am_diag_log_cache_entry(r, 0, e,
-                                    "%s ejecting expired sessions, now %s\n",
-                                    __func__,
-                                    am_diag_time_t_to_8601(r, current_time));
             break;
         }
 
@@ -367,11 +357,11 @@ am_cache_entry_t *am_cache_new(request_rec *r,
         age = (current_time - t->access) / 1000000;
 
         if(age < 3600) {
-            AM_LOG_RERROR(APLOG_MARK, APLOG_NOTICE, 0, r,
-                          "Dropping LRU entry entry with age = %" APR_TIME_T_FMT
-                          "s, which is less than one hour. It may be a good"
-                          " idea to increase MellonCacheSize.",
-                          age);
+            ap_log_error(APLOG_MARK, APLOG_NOTICE, 0, s,
+                         "Dropping LRU entry entry with age = %" APR_TIME_T_FMT
+                         "s, which is less than one hour. It may be a good"
+                         " idea to increase MellonCacheSize.",
+                         age);
         }
     }
 
@@ -392,6 +382,7 @@ am_cache_entry_t *am_cache_new(request_rec *r,
     am_cache_storage_null(&t->lasso_identity);
     am_cache_storage_null(&t->lasso_session);
     am_cache_storage_null(&t->lasso_saml_response);
+    am_cache_storage_null(&t->lasso_saml_assertion);
     am_cache_entry_env_null(t);
 
     t->pool_size = am_cache_entry_pool_size(mod_cfg);
@@ -403,17 +394,12 @@ am_cache_entry_t *am_cache_new(request_rec *r,
         /* For some strange reason our cookie token is too big to fit in the
          * session. This should never happen outside of absurd configurations.
          */
-        AM_LOG_RERROR(APLOG_MARK, APLOG_ERR, 0, r,
-                      "Unable to store cookie token in new session.");
+        ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
+                     "Unable to store cookie token in new session.");
         t->key[0] = '\0'; /* Mark the entry as free. */
         apr_global_mutex_unlock(mod_cfg->lock);
         return NULL;
     }
-
-    am_diag_printf(r, "%s created new session, id=%s at %s"
-                   " cookie_token=\"%s\"\n",
-                   __func__, t->key, am_diag_time_t_to_8601(r, current_time),
-                   cookie_token);
 
     return t;
 }
@@ -422,20 +408,20 @@ am_cache_entry_t *am_cache_new(request_rec *r,
 /* This function unlocks a session entry.
  *
  * Parameters:
- *  request_rec *r           The request we are processing.
+ *  server_rec *s            The current server.
  *  am_cache_entry_t *entry  The session entry.
  *
  * Returns:
  *  Nothing.
  */
-void am_cache_unlock(request_rec *r, am_cache_entry_t *entry)
+void am_cache_unlock(server_rec *s, am_cache_entry_t *entry)
 {
     am_mod_cfg_rec *mod_cfg;
 
     /* Update access time. */
     entry->access = apr_time_now();
 
-    mod_cfg = am_get_mod_cfg(r->server);
+    mod_cfg = am_get_mod_cfg(s);
     apr_global_mutex_unlock(mod_cfg->lock);
 }
 
@@ -444,14 +430,13 @@ void am_cache_unlock(request_rec *r, am_cache_entry_t *entry)
  * timestamp is earlier than the previous.
  *
  * Parameters:
- *  request_rec *r        The request we are processing.
  *  am_cache_entry_t *t   The current session.
  *  apr_time_t expires    The new timestamp.
  *
  * Returns:
  *  Nothing.
  */
-void am_cache_update_expires(request_rec *r, am_cache_entry_t *t, apr_time_t expires)
+void am_cache_update_expires(am_cache_entry_t *t, apr_time_t expires)
 {
     /* Check if we should update the expires timestamp. */
     if(t->expires == 0 || t->expires > expires) {
@@ -568,11 +553,11 @@ void am_cache_env_populate(request_rec *r, am_cache_entry_t *t)
     if (am_cache_entry_slot_is_empty(&t->user)) {
         for(i = 0; i < t->size; ++i) {
             varname = am_cache_entry_get_string(t, &t->env[i].varname);
-            if (strcasecmp(varname, d->userattr) == 0) {
+            if (strcmp(varname, d->userattr) == 0) {
                 value = am_cache_entry_get_string(t, &t->env[i].value);
                 status = am_cache_entry_store_string(t, &t->user, value);
                 if (status != 0) {
-                    AM_LOG_RERROR(APLOG_MARK, APLOG_NOTICE, 0, r,
+                    ap_log_rerror(APLOG_MARK, APLOG_NOTICE, 0, r,
                                   "Unable to store the user name because there"
                                   " is no more space in the session. "
                                   "Username = \"%s\".", value);
@@ -608,10 +593,10 @@ void am_cache_env_populate(request_rec *r, am_cache_entry_t *t)
          * If we find a variable remapping to MellonUser, use it.
          */
         if (am_cache_entry_slot_is_empty(&t->user) &&
-            (strcasecmp(varname, d->userattr) == 0)) {
+            (strcmp(varname, d->userattr) == 0)) {
             status = am_cache_entry_store_string(t, &t->user, value);
             if (status != 0) {
-                AM_LOG_RERROR(APLOG_MARK, APLOG_NOTICE, 0, r,
+                ap_log_rerror(APLOG_MARK, APLOG_NOTICE, 0, r,
                               "Unable to store the user name because there"
                               " is no more space in the session. "
                               "Username = \"%s\".", value);
@@ -679,7 +664,7 @@ void am_cache_env_populate(request_rec *r, am_cache_entry_t *t)
         r->ap_auth_type = apr_pstrdup(r->pool, "Mellon");
     } else {
         /* We don't have a user-"name". Log error. */
-        AM_LOG_RERROR(APLOG_MARK, APLOG_NOTICE, 0, r,
+        ap_log_rerror(APLOG_MARK, APLOG_NOTICE, 0, r,
                       "Didn't find the attribute \"%s\" in the attributes"
                       " which were received from the IdP. Cannot set a user"
                       " for this request without a valid user attribute.",
@@ -708,19 +693,27 @@ void am_cache_env_populate(request_rec *r, am_cache_entry_t *t)
             apr_table_set(r->subprocess_env, "MELLON_SAML_RESPONSE", sr);
         }
     }
+
+    if (d->dump_saml_assertion) {
+    	const char *sr = am_cache_entry_get_string(t, &t->lasso_saml_assertion);
+			if (sr) {
+				apr_table_set(r->subprocess_env, "MELLON_SAML_ASSERTION", sr);
+			}
+    }
+
 }
 
 
 /* This function deletes a given key from the session store.
  *
  * Parameters:
- *  request_rec *r            The request we are processing.
+ *  server_rec *s             The current server.
  *  am_cache_entry_t *cache   The entry we are deleting.
  *
  * Returns:
  *  Nothing.
  */
-void am_cache_delete(request_rec *r, am_cache_entry_t *cache)
+void am_cache_delete(server_rec *s, am_cache_entry_t *cache)
 {
     /* We write a null-byte at the beginning of the key to
      * mark this slot as unused. 
@@ -728,7 +721,7 @@ void am_cache_delete(request_rec *r, am_cache_entry_t *cache)
     cache->key[0] = '\0';
 
     /* Unlock the entry. */
-    am_cache_unlock(r, cache);
+    am_cache_unlock(s, cache);
 }
 
 
@@ -747,7 +740,8 @@ void am_cache_delete(request_rec *r, am_cache_entry_t *cache)
 int am_cache_set_lasso_state(am_cache_entry_t *session,
                              const char *lasso_identity,
                              const char *lasso_session,
-                             const char *lasso_saml_response)
+                             const char *lasso_saml_response,
+							 const char *lasso_saml_assertion)
 {
     int status;
 
@@ -756,7 +750,7 @@ int am_cache_set_lasso_state(am_cache_entry_t *session,
                                          lasso_identity);
     if (status != 0) {
         ap_log_error(APLOG_MARK, APLOG_ERR, 0, NULL,
-                     "Lasso identity is too big for storage. Size of lasso"
+                     "Lasso identity is to big for storage. Size of lasso"
                      " identity is %" APR_SIZE_T_FMT ".",
                      (apr_size_t)strlen(lasso_identity));
         return HTTP_INTERNAL_SERVER_ERROR;
@@ -767,7 +761,7 @@ int am_cache_set_lasso_state(am_cache_entry_t *session,
                                          lasso_session);
     if (status != 0) {
         ap_log_error(APLOG_MARK, APLOG_ERR, 0, NULL,
-                     "Lasso session is too big for storage. Size of lasso"
+                     "Lasso session is to big for storage. Size of lasso"
                      " session is %" APR_SIZE_T_FMT ".",
                      (apr_size_t)strlen(lasso_session));
         return HTTP_INTERNAL_SERVER_ERROR;
@@ -778,12 +772,22 @@ int am_cache_set_lasso_state(am_cache_entry_t *session,
                                          lasso_saml_response);
     if (status != 0) {
         ap_log_error(APLOG_MARK, APLOG_ERR, 0, NULL,
-                     "Lasso SAML response is too big for storage. Size of "
-                     "lasso SAML Response is %" APR_SIZE_T_FMT ".",
+                     "Lasso SAML response is to big for storage. Size of "
+                     "lasso SAML Reponse is %" APR_SIZE_T_FMT ".",
                      (apr_size_t)strlen(lasso_saml_response));
         return HTTP_INTERNAL_SERVER_ERROR;
     }
 
+    status = am_cache_entry_store_string(session,
+                                         &session->lasso_saml_assertion,
+                                         lasso_saml_assertion);
+    if (status != 0) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, 0, NULL,
+                     "Lasso SAML assertion is to big for storage. Size of "
+                     "lasso SAML assertion is %" APR_SIZE_T_FMT ".",
+                     (apr_size_t)strlen(lasso_saml_assertion));
+        return HTTP_INTERNAL_SERVER_ERROR;
+    }
     return OK;
 }
 
